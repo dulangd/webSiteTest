@@ -9,13 +9,14 @@ const https = require('https');
 const net = require('net');
 const crypto = require('crypto');
 
-const VERSION = '2.0.1';
+const VERSION = '2.0.2';
 const PROVIDER = 'wispbyte';
 const APP_DIR = __dirname;
 const HOME_FILE = path.join(APP_DIR, 'index.html');
 const STATE_DIR = process.env.WISPBYTE_STATE_DIR || path.join(os.homedir(), '.wispbyte-node');
 const IDENTITY_FILE = path.join(STATE_DIR, 'identity.json');
 const ENDPOINT_FILE = path.join(STATE_DIR, 'public-endpoint.json');
+const REGISTRY_PROOF_FILE = path.join(STATE_DIR, 'registry-proof.txt');
 const PORT = validPort(process.env.PORT) || validPort(process.env.SERVER_PORT) || validPort(process.env.WISPBYTE_PORT);
 const HOST = '0.0.0.0';
 const REGISTRY_URL = clean(process.env.REGISTRY_URL || 'https://subscription-server-v2-production.up.railway.app').replace(/\/+$/, '');
@@ -32,12 +33,25 @@ function validPort(v) {
   return Number.isInteger(n) && n > 0 && n <= 65535 ? n : 0;
 }
 function randomToken(bytes = 18) { return crypto.randomBytes(bytes).toString('base64url'); }
+function sha256(v) { return crypto.createHash('sha256').update(String(v)).digest('hex'); }
 function safeJsonRead(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; } }
 function atomicJsonWrite(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp-' + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
+}
+function loadRegistryProof() {
+  const fromEnv = clean(process.env.REGISTRY_PROOF);
+  if (fromEnv.length >= 32) return fromEnv;
+  try {
+    const saved = clean(fs.readFileSync(REGISTRY_PROOF_FILE, 'utf8'));
+    if (saved.length >= 32) return saved;
+  } catch {}
+  const proof = randomToken(32);
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.writeFileSync(REGISTRY_PROOF_FILE, proof + '\n', { mode: 0o600 });
+  return proof;
 }
 function normalizeWsPath(v) {
   const s = clean(v).replace(/^\/+|\/+$/g, '');
@@ -71,6 +85,8 @@ function loadIdentity() {
   return value;
 }
 const identity = loadIdentity();
+const registryProof = loadRegistryProof();
+const registryProofSha256 = sha256(registryProof);
 
 function parseEndpointString(value) {
   if (!value) return null;
@@ -187,8 +203,10 @@ const requestHandler = (req, res) => {
       endpoint_ready: !!ep,
       endpoint: ep ? `${ep.protocol}://${ep.host}:${ep.port}` : null,
       local_tls: LOCAL_TLS,
+      registry_proof_sha256: registryProofSha256,
       registry: {
-        configured: !!REGISTRY_TOKEN,
+        configured: true,
+        auth_mode: REGISTRY_TOKEN ? 'bearer-token' : 'public-proof',
         url: REGISTRY_URL,
         registered,
         last_status: registryLastStatus,
@@ -321,22 +339,24 @@ function parseVless(buf) {
   return { address, port, payload: buf.subarray(p) };
 }
 
-function requestJson(urlString, method, body, token, timeout = 10000) {
+function requestJson(urlString, method, body, token = '', timeout = 10000) {
   return new Promise((resolve, reject) => {
     let u; try { u = new URL(urlString); } catch (e) { return reject(e); }
     const lib = u.protocol === 'https:' ? https : http;
     const data = Buffer.from(JSON.stringify(body));
-    const req = lib.request({ protocol:u.protocol, hostname:u.hostname, port:u.port || undefined, path:u.pathname + u.search, method, headers:{'content-type':'application/json','content-length':data.length,'authorization':'Bearer '+token,'user-agent':'container-test-wispbyte/2.0.1'}, timeout }, res => {
+    const headers = {
+      'content-type': 'application/json',
+      'content-length': data.length,
+      'user-agent': 'container-test-wispbyte/2.0.2'
+    };
+    if (token) headers.authorization = 'Bearer ' + token;
+    const req = lib.request({ protocol:u.protocol, hostname:u.hostname, port:u.port || undefined, path:u.pathname + u.search, method, headers, timeout }, res => {
       let out=''; res.setEncoding('utf8'); res.on('data',d=>out+=d); res.on('end',()=>resolve({status:res.statusCode, body:out}));
     });
     req.on('timeout',()=>req.destroy(new Error('timeout'))); req.on('error',reject); req.end(data);
   });
 }
 function scheduleRegistration(delay = 0) {
-  if (!REGISTRY_TOKEN) {
-    registryLastError = 'REGISTRY_TOKEN missing in process environment';
-    return;
-  }
   if (!publicEndpoint?.host) {
     registryLastError = 'public endpoint not ready';
     return;
@@ -348,24 +368,42 @@ function scheduleRegistration(delay = 0) {
   }), delay);
 }
 async function registerNode() {
-  if (!REGISTRY_TOKEN || !publicEndpoint?.host) return false;
+  if (!publicEndpoint?.host) return false;
   registryLastAttemptAt = new Date().toISOString();
   registryLastError = '';
-  console.log(`[registry] register attempt node_id=${identity.nodeId} url=${REGISTRY_URL}`);
   const uri = nodeUri(publicEndpoint);
-  const r = await requestJson(REGISTRY_URL + '/api/v1/register', 'POST', { kind:'proxy', node_id:identity.nodeId, name:identity.nodeName, provider:PROVIDER, uri, priority:80 }, REGISTRY_TOKEN);
+  let r;
+  if (REGISTRY_TOKEN) {
+    console.log(`[registry] bearer register attempt node_id=${identity.nodeId} url=${REGISTRY_URL}`);
+    r = await requestJson(REGISTRY_URL + '/api/v1/register', 'POST', { kind:'proxy', node_id:identity.nodeId, name:identity.nodeName, provider:PROVIDER, uri, priority:80 }, REGISTRY_TOKEN);
+  } else {
+    console.log(`[registry] public-proof register attempt node_id=${identity.nodeId} url=${REGISTRY_URL}`);
+    r = await requestJson(REGISTRY_URL + '/api/v1/register-public', 'POST', {
+      provider: PROVIDER,
+      node_id: identity.nodeId,
+      name: identity.nodeName,
+      uri,
+      priority: 80,
+      endpoint: baseUrl(publicEndpoint),
+      proof: registryProof
+    });
+  }
   registryLastStatus = r.status;
   registered = r.status >= 200 && r.status < 300;
   if (!registered) {
-    registryLastError = 'HTTP ' + r.status;
+    registryLastError = 'HTTP ' + r.status + (r.body ? ': ' + String(r.body).slice(0, 180) : '');
     throw new Error(registryLastError);
   }
   registryLastSuccessAt = new Date().toISOString();
-  console.log(`[registry] registered node_id=${identity.nodeId}`);
+  console.log(`[registry] registered node_id=${identity.nodeId} mode=${REGISTRY_TOKEN ? 'bearer-token' : 'public-proof'}`);
   return true;
 }
 async function heartbeat() {
-  if (!REGISTRY_TOKEN || !publicEndpoint?.host) return;
+  if (!publicEndpoint?.host) return;
+  if (!REGISTRY_TOKEN) {
+    try { await registerNode(); } catch (e) { registered = false; registryLastError = e.message; }
+    return;
+  }
   try {
     const r = await requestJson(REGISTRY_URL + '/api/v1/heartbeat', 'POST', { node_id: identity.nodeId, status:'online' }, REGISTRY_TOKEN);
     registryLastStatus = r.status;
@@ -385,7 +423,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[ready] persistent state: ${STATE_DIR}`);
   console.log(`[ready] node_id=${identity.nodeId}`);
   console.log('[ready] secrets are intentionally not printed');
-  console.log(`[registry] configured=${REGISTRY_TOKEN ? 'yes' : 'no'} url=${REGISTRY_URL}`);
+  console.log(`[registry] mode=${REGISTRY_TOKEN ? 'bearer-token' : 'public-proof'} url=${REGISTRY_URL}`);
   if (publicEndpoint?.host) {
     console.log(`[ready] public endpoint ${publicEndpoint.protocol}://${publicEndpoint.host}:${publicEndpoint.port}`);
     scheduleRegistration(1500);
