@@ -1,0 +1,58 @@
+name: Patch Wispbyte v2.0.3 startup output
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Patch runtime
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('wispbyte/index.js')
+          s = p.read_text()
+          s = s.replace("const VERSION = '2.0.2';", "const VERSION = '2.0.3';")
+          s = s.replace("'user-agent': 'container-test-wispbyte/2.0.2'", "'user-agent': 'container-test-wispbyte/2.0.3'")
+          marker = "function baseUrl(ep) { return `${ep.protocol}://${formatHost(ep.host)}${((ep.protocol === 'https' && ep.port === 443) || (ep.protocol === 'http' && ep.port === 80)) ? '' : ':' + ep.port}`; }\n"
+          addition = marker + "\nlet clientOutputKey = '';\nfunction logClientOutputs(ep) {\n  if (!ep || !ep.host) return;\n  const key = `${ep.protocol}://${ep.host}:${ep.port}|${identity.uuid}|${identity.wsPath}|${identity.subToken}`;\n  if (clientOutputKey === key) return;\n  clientOutputKey = key;\n  const base = baseUrl(ep);\n  console.log(`[client] VLESS URL: ${nodeUri(ep)}`);\n  console.log(`[client] Individual subscription: ${base}/${identity.subToken}/sub`);\n  console.log(`[client] Base64 subscription: ${base}/${identity.subToken}/sub64`);\n  console.log(`[client] Node info: ${base}/${identity.subToken}/node`);\n}\n"
+          if "function logClientOutputs(ep)" not in s:
+              if marker not in s:
+                  raise SystemExit('baseUrl marker not found')
+              s = s.replace(marker, addition, 1)
+          old = "      console.log(`[endpoint] learned ${candidate.protocol}://${candidate.host}:${candidate.port}`);\n      scheduleRegistration(1200);"
+          new = "      console.log(`[endpoint] learned ${candidate.protocol}://${candidate.host}:${candidate.port}`);\n      logClientOutputs(candidate);\n      scheduleRegistration(1200);"
+          if old in s:
+              s = s.replace(old, new, 1)
+          s = s.replace("  console.log('[ready] secrets are intentionally not printed');", "  console.log('[ready] Registry/GitHub secrets are intentionally not printed');")
+          old2 = "    console.log(`[ready] public endpoint ${publicEndpoint.protocol}://${publicEndpoint.host}:${publicEndpoint.port}`);\n    scheduleRegistration(1500);"
+          new2 = "    console.log(`[ready] public endpoint ${publicEndpoint.protocol}://${publicEndpoint.host}:${publicEndpoint.port}`);\n    logClientOutputs(publicEndpoint);\n    scheduleRegistration(1500);"
+          if old2 in s:
+              s = s.replace(old2, new2, 1)
+          p.write_text(s)
+      - name: Verify patched source
+        run: |
+          node --check wispbyte/index.js
+          grep -F "const VERSION = '2.0.3';" wispbyte/index.js
+          grep -F "[client] VLESS URL:" wispbyte/index.js
+          grep -F "[client] Individual subscription:" wispbyte/index.js
+          grep -F "[client] Base64 subscription:" wispbyte/index.js
+          grep -F "[client] Node info:" wispbyte/index.js
+      - name: Commit patch
+        run: |
+          if git diff --quiet -- wispbyte/index.js; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wispbyte/index.js
+          git commit -m "Wispbyte v2.0.3: print usable client URLs on startup"
+          git push
