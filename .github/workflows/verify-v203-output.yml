@@ -1,0 +1,33 @@
+name: Verify Wispbyte v2.0.3 startup output
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify startup emits usable client URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          HOME="$tmp" PORT=19090 PUBLIC_ENDPOINT=https://1st.wispbyte.app REGISTRY_URL=http://127.0.0.1:9 node wispbyte/index.js > /tmp/wispbyte-v203.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..30}; do
+            if grep -Fq '[client] Node info:' /tmp/wispbyte-v203.log; then break; fi
+            sleep 0.1
+          done
+          cat /tmp/wispbyte-v203.log
+          grep -F '[ready] wispbyte-node v2.0.3' /tmp/wispbyte-v203.log
+          grep -E '^\[client\] VLESS URL: vless://.+' /tmp/wispbyte-v203.log
+          grep -E '^\[client\] Individual subscription: https://1st\.wispbyte\.app/.+/sub$' /tmp/wispbyte-v203.log
+          grep -E '^\[client\] Base64 subscription: https://1st\.wispbyte\.app/.+/sub64$' /tmp/wispbyte-v203.log
+          grep -E '^\[client\] Node info: https://1st\.wispbyte\.app/.+/node$' /tmp/wispbyte-v203.log
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
