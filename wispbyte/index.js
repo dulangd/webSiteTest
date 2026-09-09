@@ -9,7 +9,7 @@ const https = require('https');
 const net = require('net');
 const crypto = require('crypto');
 
-const VERSION = '2.0.2';
+const VERSION = '2.0.3';
 const PROVIDER = 'wispbyte';
 const APP_DIR = __dirname;
 const HOME_FILE = path.join(APP_DIR, 'index.html');
@@ -140,6 +140,7 @@ function learnEndpoint(req) {
     atomicJsonWrite(ENDPOINT_FILE, candidate);
     if (changed) {
       console.log(`[endpoint] learned ${candidate.protocol}://${candidate.host}:${candidate.port}`);
+      logClientOutputs(candidate);
       scheduleRegistration(1200);
     }
   }
@@ -171,6 +172,19 @@ function nodeUri(ep) {
 }
 function formatHost(host) { return net.isIP(host) === 6 ? `[${host}]` : host; }
 function baseUrl(ep) { return `${ep.protocol}://${formatHost(ep.host)}${((ep.protocol === 'https' && ep.port === 443) || (ep.protocol === 'http' && ep.port === 80)) ? '' : ':' + ep.port}`; }
+
+let clientOutputKey = '';
+function logClientOutputs(ep) {
+  if (!ep || !ep.host) return;
+  const key = `${ep.protocol}://${ep.host}:${ep.port}|${identity.uuid}|${identity.wsPath}|${identity.subToken}`;
+  if (clientOutputKey === key) return;
+  clientOutputKey = key;
+  const base = baseUrl(ep);
+  console.log(`[client] VLESS URL: ${nodeUri(ep)}`);
+  console.log(`[client] Individual subscription: ${base}/${identity.subToken}/sub`);
+  console.log(`[client] Base64 subscription: ${base}/${identity.subToken}/sub64`);
+  console.log(`[client] Node info: ${base}/${identity.subToken}/node`);
+}
 
 function send(res, status, body, type = 'text/plain; charset=utf-8') {
   res.writeHead(status, {
@@ -347,7 +361,7 @@ function requestJson(urlString, method, body, token = '', timeout = 10000) {
     const headers = {
       'content-type': 'application/json',
       'content-length': data.length,
-      'user-agent': 'container-test-wispbyte/2.0.2'
+      'user-agent': 'container-test-wispbyte/2.0.3'
     };
     if (token) headers.authorization = 'Bearer ' + token;
     const req = lib.request({ protocol:u.protocol, hostname:u.hostname, port:u.port || undefined, path:u.pathname + u.search, method, headers, timeout }, res => {
@@ -422,10 +436,11 @@ server.listen(PORT, HOST, () => {
   console.log(`[ready] wispbyte-node v${VERSION} listening on ${HOST}:${PORT} (${LOCAL_TLS ? 'https/wss' : 'http/ws'})`);
   console.log(`[ready] persistent state: ${STATE_DIR}`);
   console.log(`[ready] node_id=${identity.nodeId}`);
-  console.log('[ready] secrets are intentionally not printed');
+  console.log('[ready] Registry/GitHub secrets are intentionally not printed');
   console.log(`[registry] mode=${REGISTRY_TOKEN ? 'bearer-token' : 'public-proof'} url=${REGISTRY_URL}`);
   if (publicEndpoint?.host) {
     console.log(`[ready] public endpoint ${publicEndpoint.protocol}://${publicEndpoint.host}:${publicEndpoint.port}`);
+    logClientOutputs(publicEndpoint);
     scheduleRegistration(1500);
   } else {
     console.log('[ready] waiting for first public request to learn endpoint before Registry registration');
