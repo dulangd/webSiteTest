@@ -4,8 +4,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const BOOTSTRAP_VERSION = '1.0.1';
-const RAW_BASE = 'https://raw.githubusercontent.com/dulangd/webSiteTest/main/wispbyte';
+const BOOTSTRAP_VERSION = '1.0.2';
+const KNOWN_GOOD_COMMIT = 'db64a771057b33749c7285054416d5cb33581492';
+const RAW_BASE = `https://raw.githubusercontent.com/dulangd/webSiteTest/${KNOWN_GOOD_COMMIT}/wispbyte`;
 const DIR = __dirname;
 const INDEX_FILE = path.join(DIR, 'index.js');
 const HOME_FILE = path.join(DIR, 'index.html');
@@ -43,8 +44,8 @@ function atomicWriteIfChanged(file, content) {
 
 async function refreshRuntime() {
   const indexSource = await fetchText(`${RAW_BASE}/index.js`);
-  if (!indexSource.includes("const VERSION = '")) {
-    throw new Error('downloaded index.js failed sanity check');
+  if (!indexSource.includes("const VERSION = '2.0.2';")) {
+    throw new Error('known-good runtime sanity check failed: expected v2.0.2');
   }
   const indexChanged = atomicWriteIfChanged(INDEX_FILE, indexSource);
 
@@ -55,7 +56,7 @@ async function refreshRuntime() {
     console.warn(`[bootstrap] index.html refresh skipped: ${e.message}`);
   }
 
-  console.log(`[bootstrap] v${BOOTSTRAP_VERSION} runtime ${indexChanged ? 'updated' : 'already current'}; git clone not used`);
+  console.log(`[bootstrap] v${BOOTSTRAP_VERSION} rollback runtime ${indexChanged ? 'restored' : 'already current'}; pinned=v2.0.2 commit=${KNOWN_GOOD_COMMIT.slice(0, 8)}`);
 }
 
 function installLifecycleDiagnostics() {
@@ -82,16 +83,16 @@ function installLifecycleDiagnostics() {
 }
 
 async function main() {
-  console.log(`[bootstrap] starting v${BOOTSTRAP_VERSION}`);
+  console.log(`[bootstrap] starting v${BOOTSTRAP_VERSION} in rollback mode`);
   try {
     await refreshRuntime();
   } catch (e) {
     if (!fs.existsSync(INDEX_FILE)) {
-      console.error(`[bootstrap] fatal: runtime refresh failed and no local index.js exists: ${e.message}`);
+      console.error(`[bootstrap] fatal: rollback runtime refresh failed and no local index.js exists: ${e.message}`);
       process.exit(1);
       return;
     }
-    console.warn(`[bootstrap] runtime refresh failed; using last known-good index.js: ${e.message}`);
+    console.warn(`[bootstrap] rollback runtime refresh failed; using local index.js: ${e.message}`);
   }
 
   installLifecycleDiagnostics();
