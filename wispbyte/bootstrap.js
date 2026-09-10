@@ -3,9 +3,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 
-const BOOTSTRAP_VERSION = '1.0.0';
+const BOOTSTRAP_VERSION = '1.0.1';
 const RAW_BASE = 'https://raw.githubusercontent.com/dulangd/webSiteTest/main/wispbyte';
 const DIR = __dirname;
 const INDEX_FILE = path.join(DIR, 'index.js');
@@ -43,22 +42,43 @@ function atomicWriteIfChanged(file, content) {
 }
 
 async function refreshRuntime() {
-  const indexUrl = `${RAW_BASE}/index.js`;
-  const homeUrl = `${RAW_BASE}/index.html`;
-  const indexSource = await fetchText(indexUrl);
+  const indexSource = await fetchText(`${RAW_BASE}/index.js`);
   if (!indexSource.includes("const VERSION = '")) {
     throw new Error('downloaded index.js failed sanity check');
   }
   const indexChanged = atomicWriteIfChanged(INDEX_FILE, indexSource);
 
   try {
-    const homeSource = await fetchText(homeUrl);
+    const homeSource = await fetchText(`${RAW_BASE}/index.html`);
     atomicWriteIfChanged(HOME_FILE, homeSource);
   } catch (e) {
     console.warn(`[bootstrap] index.html refresh skipped: ${e.message}`);
   }
 
   console.log(`[bootstrap] v${BOOTSTRAP_VERSION} runtime ${indexChanged ? 'updated' : 'already current'}; git clone not used`);
+}
+
+function installLifecycleDiagnostics() {
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+    process.once(signal, () => {
+      const memMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+      console.warn(`[lifecycle] received ${signal}; uptime=${uptimeSec()}s rss=${memMb}MB`);
+      process.removeAllListeners(signal);
+      try { process.kill(process.pid, signal); } catch { process.exit(0); }
+    });
+  }
+
+  process.on('uncaughtExceptionMonitor', err => {
+    console.error(`[lifecycle] uncaught exception: ${err.stack || err.message}`);
+  });
+
+  process.on('unhandledRejection', reason => {
+    console.error(`[lifecycle] unhandled rejection: ${reason?.stack || reason}`);
+  });
+
+  process.on('exit', code => {
+    console.warn(`[lifecycle] process exit code=${code} uptime=${uptimeSec()}s`);
+  });
 }
 
 async function main() {
@@ -74,35 +94,8 @@ async function main() {
     console.warn(`[bootstrap] runtime refresh failed; using last known-good index.js: ${e.message}`);
   }
 
-  const child = spawn(process.execPath, [INDEX_FILE], {
-    stdio: 'inherit',
-    env: process.env
-  });
-
-  let forwardedSignal = null;
-  const forward = signal => {
-    if (forwardedSignal) return;
-    forwardedSignal = signal;
-    console.warn(`[bootstrap] received ${signal}; forwarding to node; uptime=${uptimeSec()}s`);
-    try { child.kill(signal); } catch {}
-  };
-
-  process.once('SIGTERM', () => forward('SIGTERM'));
-  process.once('SIGINT', () => forward('SIGINT'));
-  process.once('SIGHUP', () => forward('SIGHUP'));
-
-  child.on('error', err => {
-    console.error(`[bootstrap] child process error: ${err.message}`);
-  });
-
-  child.on('exit', (code, signal) => {
-    console.warn(`[bootstrap] node exited code=${code === null ? 'null' : code} signal=${signal || 'none'} uptime=${uptimeSec()}s`);
-    if (signal) {
-      process.exitCode = 0;
-    } else {
-      process.exitCode = Number.isInteger(code) ? code : 1;
-    }
-  });
+  installLifecycleDiagnostics();
+  require(INDEX_FILE);
 }
 
 main().catch(err => {
