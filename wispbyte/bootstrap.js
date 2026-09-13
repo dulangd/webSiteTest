@@ -4,11 +4,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const BOOTSTRAP_VERSION = '1.0.3';
+const BOOTSTRAP_VERSION = '1.0.4';
 const KNOWN_GOOD_COMMIT = 'db64a771057b33749c7285054416d5cb33581492';
 const RAW_BASE = `https://raw.githubusercontent.com/dulangd/webSiteTest/${KNOWN_GOOD_COMMIT}/wispbyte`;
 const DIR = __dirname;
-const INDEX_FILE = path.join(DIR, 'index.js');
+const RUNTIME_FILE = path.join(DIR, '.wispbyte-runtime.js');
 const HOME_FILE = path.join(DIR, 'index.html');
 const startedAt = Date.now();
 
@@ -89,17 +89,17 @@ function patchRuntime(source) {
 
 async function refreshRuntime() {
   const rawIndex = await fetchText(`${RAW_BASE}/index.js`);
-  const indexSource = patchRuntime(rawIndex);
-  const indexChanged = atomicWriteIfChanged(INDEX_FILE, indexSource);
+  const runtimeSource = patchRuntime(rawIndex);
+  const changed = atomicWriteIfChanged(RUNTIME_FILE, runtimeSource);
 
   try {
     const homeSource = await fetchText(`${RAW_BASE}/index.html`);
     atomicWriteIfChanged(HOME_FILE, homeSource);
   } catch (e) {
-    console.warn(`[bootstrap] index.html refresh skipped: ${e.message}`);
+    console.warn(`[bootstrap] page refresh skipped: ${e.message}`);
   }
 
-  console.log(`[bootstrap] v${BOOTSTRAP_VERSION} runtime ${indexChanged ? 'updated' : 'already current'}; effective=v2.0.4`);
+  console.log(`[bootstrap] v${BOOTSTRAP_VERSION} runtime ${changed ? 'updated' : 'already current'}; effective=v2.0.4`);
 }
 
 function installLifecycleDiagnostics() {
@@ -115,11 +115,9 @@ function installLifecycleDiagnostics() {
   process.on('uncaughtExceptionMonitor', err => {
     console.error(`[lifecycle] uncaught exception: ${err.stack || err.message}`);
   });
-
   process.on('unhandledRejection', reason => {
     console.error(`[lifecycle] unhandled rejection: ${reason?.stack || reason}`);
   });
-
   process.on('exit', code => {
     console.warn(`[lifecycle] process exit code=${code} uptime=${uptimeSec()}s`);
   });
@@ -130,16 +128,16 @@ async function main() {
   try {
     await refreshRuntime();
   } catch (e) {
-    if (!fs.existsSync(INDEX_FILE)) {
-      console.error(`[bootstrap] fatal: runtime refresh failed and no local index.js exists: ${e.message}`);
+    if (!fs.existsSync(RUNTIME_FILE)) {
+      console.error(`[bootstrap] fatal: runtime refresh failed and no cached runtime exists: ${e.message}`);
       process.exit(1);
       return;
     }
-    console.warn(`[bootstrap] runtime refresh failed; using local index.js: ${e.message}`);
+    console.warn(`[bootstrap] runtime refresh failed; using cached runtime: ${e.message}`);
   }
 
   installLifecycleDiagnostics();
-  require(INDEX_FILE);
+  require(RUNTIME_FILE);
 }
 
 main().catch(err => {
