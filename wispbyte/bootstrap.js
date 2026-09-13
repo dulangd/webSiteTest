@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const BOOTSTRAP_VERSION = '1.0.2';
+const BOOTSTRAP_VERSION = '1.0.3';
 const KNOWN_GOOD_COMMIT = 'db64a771057b33749c7285054416d5cb33581492';
 const RAW_BASE = `https://raw.githubusercontent.com/dulangd/webSiteTest/${KNOWN_GOOD_COMMIT}/wispbyte`;
 const DIR = __dirname;
@@ -42,11 +42,54 @@ function atomicWriteIfChanged(file, content) {
   return true;
 }
 
-async function refreshRuntime() {
-  const indexSource = await fetchText(`${RAW_BASE}/index.js`);
-  if (!indexSource.includes("const VERSION = '2.0.2';")) {
-    throw new Error('known-good runtime sanity check failed: expected v2.0.2');
+function replaceOnce(source, label, before, after) {
+  const first = source.indexOf(before);
+  if (first < 0) throw new Error(`runtime patch marker missing: ${label}`);
+  if (source.indexOf(before, first + before.length) >= 0) throw new Error(`runtime patch marker duplicated: ${label}`);
+  return source.slice(0, first) + after + source.slice(first + before.length);
+}
+
+function patchRuntime(source) {
+  let out = source;
+  if (!out.includes("const VERSION = '2.0.2';")) throw new Error('known-good runtime sanity check failed: expected v2.0.2');
+
+  out = replaceOnce(out, 'version', "const VERSION = '2.0.2';", "const VERSION = '2.0.4';");
+  out = replaceOnce(
+    out,
+    'endpoint-stability',
+    'if (!publicEndpoint || endpointScore(candidate) >= endpointScore(publicEndpoint)) {',
+    'if (!publicEndpoint || endpointScore(candidate) > endpointScore(publicEndpoint)) {'
+  );
+  out = replaceOnce(
+    out,
+    'registration-promise',
+    'let registerTimer = null;\nlet registered = false;',
+    'let registerTimer = null;\nlet registerPromise = null;\nlet registered = false;'
+  );
+  out = replaceOnce(
+    out,
+    'registration-wrapper',
+    'async function registerNode() {\n  if (!publicEndpoint?.host) return false;',
+    `async function registerNode() {\n  if (registerPromise) return registerPromise;\n  registerPromise = registerNodeOnce().finally(() => { registerPromise = null; });\n  return registerPromise;\n}\nasync function registerNodeOnce() {\n  if (!publicEndpoint?.host) return false;\n  const lastOk = Date.parse(registryLastSuccessAt || '');\n  if (registered && Number.isFinite(lastOk) && Date.now() - lastOk < 60000) return true;`
+  );
+  out = out.replace('    console.log(`[registry] bearer register attempt node_id=${identity.nodeId} url=${REGISTRY_URL}`);\n', '');
+  out = out.replace('    console.log(`[registry] public-proof register attempt node_id=${identity.nodeId} url=${REGISTRY_URL}`);\n', '');
+  out = replaceOnce(
+    out,
+    'success-log',
+    '  registryLastSuccessAt = new Date().toISOString();\n  console.log(`[registry] registered node_id=${identity.nodeId} mode=${REGISTRY_TOKEN ? \'bearer-token\' : \'public-proof\'}`);',
+    `  const firstSuccess = !registryLastSuccessAt;\n  registryLastSuccessAt = new Date().toISOString();\n  if (firstSuccess) console.log(\`[registry] connected node_id=\${identity.nodeId} mode=\${REGISTRY_TOKEN ? 'bearer-token' : 'public-proof'}\`);`
+  );
+
+  if (!out.includes("const VERSION = '2.0.4';") || !out.includes('registerPromise')) {
+    throw new Error('runtime patch validation failed');
   }
+  return out;
+}
+
+async function refreshRuntime() {
+  const rawIndex = await fetchText(`${RAW_BASE}/index.js`);
+  const indexSource = patchRuntime(rawIndex);
   const indexChanged = atomicWriteIfChanged(INDEX_FILE, indexSource);
 
   try {
@@ -56,7 +99,7 @@ async function refreshRuntime() {
     console.warn(`[bootstrap] index.html refresh skipped: ${e.message}`);
   }
 
-  console.log(`[bootstrap] v${BOOTSTRAP_VERSION} rollback runtime ${indexChanged ? 'restored' : 'already current'}; pinned=v2.0.2 commit=${KNOWN_GOOD_COMMIT.slice(0, 8)}`);
+  console.log(`[bootstrap] v${BOOTSTRAP_VERSION} runtime ${indexChanged ? 'updated' : 'already current'}; effective=v2.0.4`);
 }
 
 function installLifecycleDiagnostics() {
@@ -83,16 +126,16 @@ function installLifecycleDiagnostics() {
 }
 
 async function main() {
-  console.log(`[bootstrap] starting v${BOOTSTRAP_VERSION} in rollback mode`);
+  console.log(`[bootstrap] starting v${BOOTSTRAP_VERSION}`);
   try {
     await refreshRuntime();
   } catch (e) {
     if (!fs.existsSync(INDEX_FILE)) {
-      console.error(`[bootstrap] fatal: rollback runtime refresh failed and no local index.js exists: ${e.message}`);
+      console.error(`[bootstrap] fatal: runtime refresh failed and no local index.js exists: ${e.message}`);
       process.exit(1);
       return;
     }
-    console.warn(`[bootstrap] rollback runtime refresh failed; using local index.js: ${e.message}`);
+    console.warn(`[bootstrap] runtime refresh failed; using local index.js: ${e.message}`);
   }
 
   installLifecycleDiagnostics();
