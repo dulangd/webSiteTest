@@ -28,7 +28,7 @@ jobs:
           const h = JSON.parse(fs.readFileSync('/tmp/health.json','utf8'));
           if (h.ok !== true) process.exit(2);
           if (h.service !== 'wispbyte-node') process.exit(3);
-          if (h.version !== '2.0.3') process.exit(4);
+          if (h.version !== '2.0.4') process.exit(4);
           if (h.node_id !== 'wispbyte-rbigccnsjeqso9ch') process.exit(5);
           if (h.endpoint !== 'https://1st.wispbyte.app:443') process.exit(6);
           if (h.registry?.auth_mode !== 'public-proof' && h.registry?.auth_mode !== 'bearer-token') process.exit(7);
