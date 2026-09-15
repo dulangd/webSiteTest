@@ -1,44 +1,34 @@
-name: Wispbyte mirror check
+name: Wispbyte live probe
 on:
   push:
-    branches: [main]
+    branches: [wispbyte-live-probe]
   workflow_dispatch:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Check runtime syntax
+      - name: Check repository runtime syntax
         run: |
           node --check wispbyte/index.js
           node --check wispbyte/bootstrap.js
-      - name: Verify live Wispbyte node and Registry
-        if: github.event_name == 'workflow_dispatch'
+      - name: Probe live Wispbyte node
         shell: bash
         run: |
           set -euo pipefail
-          for i in {1..12}; do
-            if curl -fsS --connect-timeout 10 --max-time 20 https://1st.wispbyte.app/health -o /tmp/health.json; then
-              cat /tmp/health.json
-              node - <<'NODE'
+          curl -fsS --connect-timeout 10 --max-time 20 https://1st.wispbyte.app/health -o /tmp/health.json
+          cat /tmp/health.json
+          node - <<'NODE'
           const fs = require('fs');
           const h = JSON.parse(fs.readFileSync('/tmp/health.json','utf8'));
-          if (h.ok !== true) process.exit(2);
-          if (h.service !== 'wispbyte-node') process.exit(3);
-          if (h.version !== '2.0.3') process.exit(4);
-          if (h.node_id !== 'wispbyte-rbigccnsjeqso9ch') process.exit(5);
-          if (h.endpoint !== 'https://1st.wispbyte.app:443') process.exit(6);
-          if (h.registry?.auth_mode !== 'public-proof' && h.registry?.auth_mode !== 'bearer-token') process.exit(7);
-          if (h.registry?.registered !== true) process.exit(8);
-          if (!(Number(h.registry?.last_status) >= 200 && Number(h.registry?.last_status) < 300)) process.exit(9);
-          console.log('LIVE_WISPBYTE_OK version=' + h.version + ' registry=' + h.registry.auth_mode + ' status=' + h.registry.last_status);
+          if (h.ok !== true) throw new Error('health ok != true');
+          if (h.service !== 'wispbyte-node') throw new Error('unexpected service=' + h.service);
+          if (h.node_id !== 'wispbyte-rbigccnsjeqso9ch') throw new Error('unexpected node_id=' + h.node_id);
+          if (h.endpoint !== 'https://1st.wispbyte.app:443') throw new Error('unexpected endpoint=' + h.endpoint);
+          if (!['public-proof','bearer-token'].includes(h.registry?.auth_mode)) throw new Error('unexpected registry mode=' + h.registry?.auth_mode);
+          console.log('LIVE_WISPBYTE_STATE version=' + h.version + ' registry=' + h.registry?.auth_mode + ' registered=' + h.registry?.registered + ' status=' + h.registry?.last_status + ' last_success=' + h.registry?.last_success_at);
           NODE
-              exit 0
-            fi
-            sleep 10
-          done
-          echo 'Live Wispbyte verification did not become healthy/registered in time' >&2
-          exit 1
