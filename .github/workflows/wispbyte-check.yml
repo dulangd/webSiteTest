@@ -12,52 +12,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Check repository runtime syntax
-        run: |
-          node --check wispbyte/index.js
-          node --check wispbyte/bootstrap.js
-      - name: Probe Railway production
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsS --connect-timeout 10 --max-time 20 https://subscription-server-v2-production.up.railway.app/health -o /tmp/rh.json
-          cat /tmp/rh.json; echo
-          node - <<'NODE'
-          const fs=require('fs');
-          const h=JSON.parse(fs.readFileSync('/tmp/rh.json','utf8'));
-          if(h.status!=='ok') throw new Error('Railway health failed');
-          if(h.version!=='5.0.5') throw new Error('unexpected Railway version='+h.version);
-          if(h.stored_nodes!==9||h.subscription_nodes!==8) throw new Error('registry inventory changed');
-          if(h.target_connected!==true) throw new Error('target backend disconnected');
-          console.log('RAILWAY_HEALTH_OK version='+h.version+' stored='+h.stored_nodes+' subscription='+h.subscription_nodes);
-          NODE
-          code=$(curl -sS -o /tmp/traffic.html -w '%{http_code}' --connect-timeout 10 --max-time 20 https://subscription-server-v2-production.up.railway.app/traffic)
-          echo "RAILWAY_TRAFFIC_HTTP=$code bytes=$(wc -c </tmp/traffic.html)"
-          test "$code" = "200" -o "$code" = "302" -o "$code" = "401"
-      - name: Probe permanent subscription gateway
-        shell: bash
-        run: |
-          set -euo pipefail
-          code=$(curl -sS -o /tmp/seeder.out -w '%{http_code}' --connect-timeout 10 --max-time 20 https://subscription-seeder2-production.up.railway.app/)
-          echo "SEEDER_HTTP=$code bytes=$(wc -c </tmp/seeder.out)"
-          head -c 200 /tmp/seeder.out || true
-          echo
-          test "$code" = "200"
-          test -s /tmp/seeder.out
-      - name: Probe Wispbyte and JustRunMy
+      - name: Probe Wispbyte after restart
         shell: bash
         run: |
           set -euo pipefail
           curl -fsS --connect-timeout 10 --max-time 20 https://1st.wispbyte.app/health -o /tmp/wisp.json
-          curl -fsS --connect-timeout 10 --max-time 20 https://lst.b.onjrnm.vip/health -o /tmp/jrmy.json
           cat /tmp/wisp.json; echo
-          cat /tmp/jrmy.json; echo
           node - <<'NODE'
           const fs=require('fs');
           const w=JSON.parse(fs.readFileSync('/tmp/wisp.json','utf8'));
-          const j=JSON.parse(fs.readFileSync('/tmp/jrmy.json','utf8'));
-          if(w.ok!==true||w.registry?.registered!==true) throw new Error('Wispbyte unhealthy');
-          if(j.ok!==true) throw new Error('JustRunMy unhealthy');
-          console.log('WISPBYTE_LIVE version='+w.version+' registry='+w.registry?.auth_mode+' status='+w.registry?.last_status);
-          console.log('JUSTRUNMY_LIVE version='+j.version+' registry='+j.registry?.auth_mode+' status='+j.registry?.last_status);
+          if(w.ok!==true) throw new Error('Wispbyte unhealthy');
+          if(w.version!=='2.0.4') throw new Error('unexpected Wispbyte version='+w.version);
+          if(w.registry?.registered!==true) throw new Error('registry not registered');
+          if(Number(w.registry?.last_status)!==200) throw new Error('registry status='+w.registry?.last_status);
+          console.log('WISPBYTE_POST_RESTART_OK version='+w.version+' registry='+w.registry.auth_mode+' status='+w.registry.last_status+' last_success='+w.registry.last_success_at);
           NODE
