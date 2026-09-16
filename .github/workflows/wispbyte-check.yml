@@ -25,8 +25,11 @@ jobs:
           node - <<'NODE'
           const fs=require('fs');
           const h=JSON.parse(fs.readFileSync('/tmp/rh.json','utf8'));
-          if(h.ok!==true) throw new Error('Railway health failed');
-          console.log('RAILWAY_HEALTH_OK version='+(h.version||h.service||'unknown'));
+          if(h.status!=='ok') throw new Error('Railway health failed');
+          if(h.version!=='5.0.5') throw new Error('unexpected Railway version='+h.version);
+          if(h.stored_nodes!==9||h.subscription_nodes!==8) throw new Error('registry inventory changed');
+          if(h.target_connected!==true) throw new Error('target backend disconnected');
+          console.log('RAILWAY_HEALTH_OK version='+h.version+' stored='+h.stored_nodes+' subscription='+h.subscription_nodes);
           NODE
           code=$(curl -sS -o /tmp/traffic.html -w '%{http_code}' --connect-timeout 10 --max-time 20 https://subscription-server-v2-production.up.railway.app/traffic)
           echo "RAILWAY_TRAFFIC_HTTP=$code bytes=$(wc -c </tmp/traffic.html)"
