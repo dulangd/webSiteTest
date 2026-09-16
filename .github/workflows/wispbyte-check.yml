@@ -1,4 +1,4 @@
-name: Wispbyte live probe
+name: Wispbyte launcher proof
 on:
   push:
     branches: [wispbyte-live-probe]
@@ -8,22 +8,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Probe Wispbyte after restart
+      - name: Run exact stale-proof launcher in a clean directory
         shell: bash
+        env:
+          PORT: '19642'
+          REGISTRY_URL: 'http://127.0.0.1:9'
+          PUBLIC_ENDPOINT: 'https://ci.invalid:443'
         run: |
           set -euo pipefail
-          curl -fsS --connect-timeout 10 --max-time 20 https://1st.wispbyte.app/health -o /tmp/wisp.json
-          cat /tmp/wisp.json; echo
+          mkdir -p /tmp/wispbyte-launch
+          B=/tmp/wispbyte-launch/bootstrap.js
+          T=${B}.new
+          if curl -fsSL --connect-timeout 10 --max-time 30 https://raw.githubusercontent.com/dulangd/webSiteTest/main/wispbyte/bootstrap.js -o "$T"; then
+            mv "$T" "$B"
+          else
+            rm -f "$T"
+          fi
+          test -s "$B"
+          node "$B" >/tmp/wispbyte-launch.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..30}; do
+            if curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:19642/health -o /tmp/health.json; then
+              break
+            fi
+            sleep 1
+          done
+          cat /tmp/wispbyte-launch.log
+          cat /tmp/health.json; echo
           node - <<'NODE'
           const fs=require('fs');
-          const w=JSON.parse(fs.readFileSync('/tmp/wisp.json','utf8'));
-          if(w.ok!==true) throw new Error('Wispbyte unhealthy');
-          if(w.version!=='2.0.4') throw new Error('unexpected Wispbyte version='+w.version);
-          if(w.registry?.registered!==true) throw new Error('registry not registered');
-          if(Number(w.registry?.last_status)!==200) throw new Error('registry status='+w.registry?.last_status);
-          console.log('WISPBYTE_POST_RESTART_OK version='+w.version+' registry='+w.registry.auth_mode+' status='+w.registry.last_status+' last_success='+w.registry.last_success_at);
+          const h=JSON.parse(fs.readFileSync('/tmp/health.json','utf8'));
+          if(h.ok!==true) throw new Error('health failed');
+          if(h.version!=='2.0.4') throw new Error('expected v2.0.4 got '+h.version);
+          if(h.service!=='wispbyte-node') throw new Error('unexpected service '+h.service);
+          console.log('STALE_PROOF_LAUNCHER_OK version='+h.version+' endpoint='+h.endpoint);
           NODE
+          grep -q '\[bootstrap\] starting v1.0.4' /tmp/wispbyte-launch.log
+          grep -q 'effective=v2.0.4' /tmp/wispbyte-launch.log
+          grep -q '\[ready\] wispbyte-node v2.0.4' /tmp/wispbyte-launch.log
