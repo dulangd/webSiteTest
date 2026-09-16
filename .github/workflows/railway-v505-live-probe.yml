@@ -1,0 +1,52 @@
+name: Railway v5.0.5 live probe
+on:
+  push:
+    branches: [wispbyte-live-probe]
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe Railway health and manager
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --connect-timeout 10 --max-time 20 https://subscription-server-v2-production.up.railway.app/health -o /tmp/railway-health.json
+          cat /tmp/railway-health.json
+          python - <<'PY'
+          import json
+          h=json.load(open('/tmp/railway-health.json'))
+          assert h.get('ok') is True, h
+          print('RAILWAY_HEALTH_OK', h)
+          PY
+          code=$(curl -sS -o /tmp/traffic.html -w '%{http_code}' --connect-timeout 10 --max-time 20 https://subscription-server-v2-production.up.railway.app/traffic)
+          echo "RAILWAY_TRAFFIC_HTTP=$code bytes=$(wc -c </tmp/traffic.html)"
+          test "$code" = "200" -o "$code" = "302" -o "$code" = "401"
+      - name: Probe permanent subscription gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/seeder.out -w '%{http_code}' --connect-timeout 10 --max-time 20 https://subscription-seeder2-production.up.railway.app/)
+          echo "SEEDER_HTTP=$code bytes=$(wc -c </tmp/seeder.out)"
+          head -c 200 /tmp/seeder.out || true
+          echo
+          test "$code" = "200"
+          test -s /tmp/seeder.out
+      - name: Probe Wispbyte and JustRunMy
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --connect-timeout 10 --max-time 20 https://1st.wispbyte.app/health -o /tmp/wisp.json
+          curl -fsS --connect-timeout 10 --max-time 20 https://lst.b.onjrnm.vip/health -o /tmp/jrmy.json
+          cat /tmp/wisp.json; echo
+          cat /tmp/jrmy.json; echo
+          python - <<'PY'
+          import json
+          w=json.load(open('/tmp/wisp.json'))
+          j=json.load(open('/tmp/jrmy.json'))
+          assert w.get('ok') is True and w.get('registry',{}).get('registered') is True, w
+          assert j.get('ok') is True, j
+          print('WISPBYTE_LIVE version=%s registry=%s status=%s' % (w.get('version'), w.get('registry',{}).get('auth_mode'), w.get('registry',{}).get('last_status')))
+          print('JUSTRUNMY_LIVE version=%s registry=%s status=%s' % (j.get('version'), j.get('registry',{}).get('auth_mode'), j.get('registry',{}).get('last_status')))
+          PY
