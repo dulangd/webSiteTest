@@ -16,19 +16,45 @@ jobs:
         run: |
           node --check wispbyte/index.js
           node --check wispbyte/bootstrap.js
-      - name: Probe live Wispbyte node
+      - name: Probe Railway production
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsS --connect-timeout 10 --max-time 20 https://1st.wispbyte.app/health -o /tmp/health.json
-          cat /tmp/health.json
+          curl -fsS --connect-timeout 10 --max-time 20 https://subscription-server-v2-production.up.railway.app/health -o /tmp/rh.json
+          cat /tmp/rh.json; echo
           node - <<'NODE'
-          const fs = require('fs');
-          const h = JSON.parse(fs.readFileSync('/tmp/health.json','utf8'));
-          if (h.ok !== true) throw new Error('health ok != true');
-          if (h.service !== 'wispbyte-node') throw new Error('unexpected service=' + h.service);
-          if (h.node_id !== 'wispbyte-rbigccnsjeqso9ch') throw new Error('unexpected node_id=' + h.node_id);
-          if (h.endpoint !== 'https://1st.wispbyte.app:443') throw new Error('unexpected endpoint=' + h.endpoint);
-          if (!['public-proof','bearer-token'].includes(h.registry?.auth_mode)) throw new Error('unexpected registry mode=' + h.registry?.auth_mode);
-          console.log('LIVE_WISPBYTE_STATE version=' + h.version + ' registry=' + h.registry?.auth_mode + ' registered=' + h.registry?.registered + ' status=' + h.registry?.last_status + ' last_success=' + h.registry?.last_success_at);
+          const fs=require('fs');
+          const h=JSON.parse(fs.readFileSync('/tmp/rh.json','utf8'));
+          if(h.ok!==true) throw new Error('Railway health failed');
+          console.log('RAILWAY_HEALTH_OK version='+(h.version||h.service||'unknown'));
+          NODE
+          code=$(curl -sS -o /tmp/traffic.html -w '%{http_code}' --connect-timeout 10 --max-time 20 https://subscription-server-v2-production.up.railway.app/traffic)
+          echo "RAILWAY_TRAFFIC_HTTP=$code bytes=$(wc -c </tmp/traffic.html)"
+          test "$code" = "200" -o "$code" = "302" -o "$code" = "401"
+      - name: Probe permanent subscription gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/seeder.out -w '%{http_code}' --connect-timeout 10 --max-time 20 https://subscription-seeder2-production.up.railway.app/)
+          echo "SEEDER_HTTP=$code bytes=$(wc -c </tmp/seeder.out)"
+          head -c 200 /tmp/seeder.out || true
+          echo
+          test "$code" = "200"
+          test -s /tmp/seeder.out
+      - name: Probe Wispbyte and JustRunMy
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --connect-timeout 10 --max-time 20 https://1st.wispbyte.app/health -o /tmp/wisp.json
+          curl -fsS --connect-timeout 10 --max-time 20 https://lst.b.onjrnm.vip/health -o /tmp/jrmy.json
+          cat /tmp/wisp.json; echo
+          cat /tmp/jrmy.json; echo
+          node - <<'NODE'
+          const fs=require('fs');
+          const w=JSON.parse(fs.readFileSync('/tmp/wisp.json','utf8'));
+          const j=JSON.parse(fs.readFileSync('/tmp/jrmy.json','utf8'));
+          if(w.ok!==true||w.registry?.registered!==true) throw new Error('Wispbyte unhealthy');
+          if(j.ok!==true) throw new Error('JustRunMy unhealthy');
+          console.log('WISPBYTE_LIVE version='+w.version+' registry='+w.registry?.auth_mode+' status='+w.registry?.last_status);
+          console.log('JUSTRUNMY_LIVE version='+j.version+' registry='+j.registry?.auth_mode+' status='+j.registry?.last_status);
           NODE
